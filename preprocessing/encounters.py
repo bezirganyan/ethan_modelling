@@ -1,3 +1,4 @@
+import argparse
 from os import path, listdir, makedirs
 from datetime import date, timedelta
 
@@ -22,6 +23,8 @@ class EncounterProcessor:
             path to the folders containing the encounters data (output of the simulation)
         district_graph_file : srt, default = district_graph.gpickle
             the name of the district graph file in the encounters folder
+        data_output_dir: str, default = output
+            Directory where preprocessing output must be saved
         start_day : int, optional
             the day from which the data needs to be loaded. If not provided the smallest day in directory will be taken
         end_day : int, optional
@@ -276,3 +279,24 @@ class EncounterProcessor:
             df.to_csv(path.join(graphs_path, f'SI_{startdate.strftime("%Y-%m-%d")}.csv'), header=False, index=False)
             startdate += timedelta(1)
 
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--encounters_dir', type=str, required=True,
+                        help='Path to the folders containing the encounters data (output of the simulation)')
+    parser.add_argument('--district_graph_file', type=str, default='district_graph.gpickle',
+                        help='The name of the district graph file in the encounters folder')
+    parser.add_argument('--data_output_dir', type=str, default='output',
+                        help='Directory where preprocessing output must be saved')
+    parser.add_argument('--start_day', type=str, default=None,
+                        help='The day from which the data needs to be loaded. If not provided the smallest day in directory will be taken')
+    parser.add_argument('--end_day', type=str, default=None,
+                        help='The day until which the data needs to be loaded. If not provided the biggest day in directory will be taken')
+    parser.add_argument('--verbose', dest='verbose', action='store_true',
+                        help='Verbosity')
+    parser.add_argument('--mode', type=str, default='graph_learning',
+                        help='The day until which the data needs to be loaded.  If not provided the biggest day in directory will be taken')
+    args = parser.parse_args()
+
+    ep = EncounterProcessor(**vars(args))
+    ep.prepare()
