@@ -1,0 +1,6 @@
+/results/
+/output/
+.idea
+*/__pycache__
+__pycache__
+*.pth.tar
