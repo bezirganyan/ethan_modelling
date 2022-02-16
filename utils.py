@@ -8,8 +8,10 @@ import pandas as pd
 from datetime import timedelta, datetime
 
 
-def read_meta_datasets(window, labels_path, graphs_dir, country):
+def read_meta_datasets(window, labels_path, graphs_dir, country, smooth_window=None):
     labels = pd.read_csv(labels_path)
+    if smooth_window:
+        labels = labels.rolling(smooth_window, axis=1, min_periods=0).mean()
     labels = labels.set_index("name")
 
     sdate = datetime.strptime(labels.columns[0], "%Y-%m-%d").date()
@@ -22,7 +24,7 @@ def read_meta_datasets(window, labels_path, graphs_dir, country):
     labels = labels.loc[list(Gs[0].nodes()), :]
     labels = labels.loc[:, dates]
     gs_adj = [nx.adjacency_matrix(kgs).toarray().T for kgs in Gs]
-    features = generate_new_features(Gs, labels, dates, window)
+    features = generate_new_features(Gs, labels, dates, window, scaled=True)
 
     y = list()
     nodes_without_labels = set()
@@ -65,7 +67,7 @@ def generate_new_features(Gs, labels, dates, window=7, scaled=False):
 
         H = np.zeros([G.number_of_nodes(), window])  # +3+n_departments])#])#])
         me = labs.loc[:, dates[:(idx)]].mean(1)
-        sd = labs.loc[:, dates[:(idx)]].std(1) + 1
+        sd = np.nan_to_num(labs.loc[:, dates[:(idx)]].std(1)) + 1
 
         for i, node in enumerate(G.nodes()):
             # ---- Past cases
@@ -86,15 +88,13 @@ def generate_new_features(Gs, labels, dates, window=7, scaled=False):
 
     return features
 
-
-def generate_new_batches(Gs, features, y, idx, graph_window, shift, batch_size, device, test_sample):
+def generate_new_batches_legacy(Gs, features, y, idx, graph_window, shift, batch_size, device, test_sample):
     """
     Generate batches for graphs for MPNN
     """
 
     N = len(idx)
     n_nodes = Gs[0].shape[0]
-
     adj_lst = list()
     features_lst = list()
     y_lst = list()
@@ -135,6 +135,60 @@ def generate_new_batches(Gs, features, y, idx, graph_window, shift, batch_size, 
         adj_lst.append(sparse_mx_to_torch_sparse_tensor(adj_tmp).to(device))
         features_lst.append(torch.FloatTensor(features_tmp).to(device))
         y_lst.append(torch.FloatTensor(y_tmp).to(device))
+
+    return adj_lst, features_lst, y_lst
+
+def generate_new_batches(Gs, features, y, idx, graph_window, shift, batch_size, device, test_sample):
+    """
+    Generate batches for graphs for MPNN
+    """
+
+    N = len(idx)
+    n_nodes = Gs[0].shape[0]
+    batch_size = N
+    adj_lst = list()
+    features_lst = list()
+    y_lst = list()
+
+    for i in range(0, N, batch_size):
+        n_nodes_batch = (min(i + batch_size, N) - i) * graph_window * n_nodes
+        step = n_nodes * graph_window
+
+        adj_tmp = list()
+        features_tmp = np.zeros((n_nodes_batch, features[0].shape[1]))
+
+        y_tmp = np.zeros((min(i + batch_size, N) - i) * n_nodes)
+
+        # fill the input for each batch
+        for e1, j in enumerate(range(i, min(i + batch_size, N))):
+            val = idx[j]
+
+            # Feature[10] containes the previous 7 cases of y[10]
+            for e2, k in enumerate(range(val - graph_window + 1, val + 1)):
+                adj_tmp.append(Gs[k - 1].T)
+                # each feature has a size of n_nodes
+                features_tmp[(e1 * step + e2 * n_nodes):(e1 * step + (e2 + 1) * n_nodes), :] = features[
+                    k]  # -features[val-graph_window-1]
+
+            if (test_sample > 0):
+                # --- val is by construction less than test sample
+                if (val + shift < test_sample):
+                    y_tmp[(n_nodes * e1):(n_nodes * (e1 + 1))] = y[val + shift]
+
+                else:
+                    y_tmp[(n_nodes * e1):(n_nodes * (e1 + 1))] = y[val]
+
+
+            else:
+                y_tmp[(n_nodes * e1):(n_nodes * (e1 + 1))] = y[val + shift]
+
+        adj_tmp = sp.block_diag(adj_tmp)
+        adj_lst.append(sparse_mx_to_torch_sparse_tensor(adj_tmp).to(device).unsqueeze(0))
+        features_lst.append(torch.FloatTensor(features_tmp).to(device).unsqueeze(0))
+        y_lst.append(torch.FloatTensor(y_tmp).to(device).unsqueeze(0))
+    adj_lst = torch.stack(adj_lst, dim=0)
+    features_lst = torch.stack(features_lst, dim=0)
+    y_lst = torch.stack(y_lst, dim=0)
 
     return adj_lst, features_lst, y_lst
 
