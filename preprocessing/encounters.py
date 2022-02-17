@@ -5,8 +5,21 @@ from os import path, listdir, makedirs
 import networkx as nx
 import numpy as np
 import pandas as pd
+from data_cache import numpy_cache
 from tqdm import tqdm
-from joblib import Memory, memory
+
+
+@numpy_cache
+def compute_crowdedness(data):
+    crowdedness = np.zeros((data['fac_id'].nunique(), 24, 7))
+    for i, fac in tqdm(enumerate(data['fac_id'].unique()), total=len(data['fac_id'].unique())):
+        cr_fac = data[(data['fac_id'] == fac)]
+        for hour in range(48):
+            crd = cr_fac[(cr_fac['starting_time'] <= hour) & (
+                    cr_fac['starting_time'] + (cr_fac['duration'] / 60) * 2 >= hour)].groupby(['dm', 'day'])[
+                'node_id1'].count().reset_index().groupby('day')['node_id1'].mean()
+            crowdedness[i, hour // 2, crd.index.astype(int).values] += crd.values
+    return crowdedness
 
 
 class EncounterProcessor:
@@ -79,7 +92,7 @@ class EncounterProcessor:
         self.add_node_status()
         self.add_total_cases_in_past_day()
         self.data = self.data[self.data['status'] == 0]
-        agg_list = ('duration', 'lead_to_infection', 'status_node2', 'crowdedness_fac', 'intensity', 'dist_inf')
+        agg_list = ('duration', 'lead_to_infection', 'status_node2', 'crowdedness_fac', 'intensity', 'dist_inf_x')
         group_by_list = ('node_id1', 'gen_fac', 'dm', 'facility_id', 'day', 'starting_time', 'cases')
         self.data = self.data.groupby([*group_by_list])[[*agg_list]].agg(
             duration=pd.NamedAgg(column='duration', aggfunc='sum'),
@@ -157,7 +170,11 @@ class EncounterProcessor:
 
     def add_crowdedness(self) -> None:
         """
-        Add facility crowdedness information to data
+        Add facility crowdedness information to data. Since this is computationally the heaviest operation, the result
+        is being cached by default, and if the input data is the same, the result will be loaded from the cache. The
+        cache is stored in `data.h5` file. If you want to change the caching dir, set the environment variable
+        `CACHE_PATH` to be the desired directory of the `data.h5` file. To disable the cache set the environment
+        variable `DISABLE_CACHE` to `TRUE`.
         Returns
         -------
         None
@@ -165,16 +182,9 @@ class EncounterProcessor:
         if self.verbose:
             print(f'- Adding crowdedness . . .')
 
+        # memory.cache(compute_crowdedness)
+        crowdedness = compute_crowdedness(self.data)
         rev_dict = {d: i for i, d in enumerate(self.data['fac_id'].unique())}
-        crowdedness = np.zeros((self.data['fac_id'].nunique(), 24, 7))
-        for i, fac in tqdm(enumerate(self.data['fac_id'].unique()), total=len(self.data['fac_id'].unique())):
-            cr_fac = self.data[(self.data['fac_id'] == fac)]
-            for hour in range(48):
-                crd = cr_fac[(cr_fac['starting_time'] <= hour) & (
-                        cr_fac['starting_time'] + (cr_fac['duration'] / 60) * 2 >= hour)].groupby(['dm', 'day'])[
-                    'node_id1'].count().reset_index().groupby('day')['node_id1'].mean()
-                crowdedness[i, hour // 2, crd.index.astype(int).values] += crd.values
-
         res = []
         for i in tqdm(range(0, self.data.shape[0], 100)):
             res.extend(list(self.data.iloc[i:i + 100].apply(lambda x: crowdedness[
@@ -312,7 +322,6 @@ class EncounterProcessor:
 
 
 if __name__ == '__main__':
-    memory = Memory("cachedir")
     parser = argparse.ArgumentParser()
     parser.add_argument('--encounters_dir', type=str, required=True,
                         help='Path to the folders containing the encounters data (output of the simulation)')
@@ -328,7 +337,15 @@ if __name__ == '__main__':
                         help='Verbosity')
     parser.add_argument('--mode', type=str, default='graph_learning',
                         help='The day until which the data needs to be loaded.  If not provided the biggest day in directory will be taken')
-    args = parser.parse_args()
+    parser.add_argument('--random_seed', type=int, default=42)
 
-    ep = EncounterProcessor(**vars(args))
+    args = parser.parse_args()
+    np.random.seed(args.random_seed)
+    ep = EncounterProcessor(encounters_dir=args.encounters_dir,
+                            district_graph_file=args.district_graph_file,
+                            data_output_dir=args.data_output_dir,
+                            start_day=args.start_day,
+                            end_day=args.end_day,
+                            verbose=args.verbose,
+                            mode=args.mode)
     ep.prepare()
