@@ -1,11 +1,12 @@
 import argparse
-from os import path, listdir, makedirs
 from datetime import date, timedelta
+from os import path, listdir, makedirs
 
-import pandas as pd
-import numpy as np
-from tqdm import tqdm
 import networkx as nx
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+from joblib import Memory, memory
 
 
 class EncounterProcessor:
@@ -50,7 +51,8 @@ class EncounterProcessor:
     def prepare(self):
         if not path.exists(self.data_output_dir):
             makedirs(self.data_output_dir)
-        if self.verbose: print(f'Mode chosen: {self.mode}')
+        if self.verbose:
+            print(f'Mode chosen: {self.mode}')
         if self.mode == 'graph_learning':
             self.prepare_data_for_graph_learning()
         elif self.mode == 'tabular_visit':
@@ -68,7 +70,25 @@ class EncounterProcessor:
         self.create_mobility_dataset()
 
     def prepare_data_for_tabular_visit_learning(self):
-        raise NotImplementedError()
+        self.data = self.read_day_partitioned_data(self.encounters_dir, 'encounters')
+        self.nodes = self.read_day_partitioned_data(self.encounters_dir, 'nodes')
+        self.clean_encounters_data([*range(14), 15])
+        self.add_crowdedness()
+        self.add_inverse_data()
+        self.add_district_infection_numbers()
+        self.add_node_status()
+        self.add_total_cases_in_past_day()
+        self.data = self.data[self.data['status'] == 0]
+        agg_list = ('duration', 'lead_to_infection', 'status_node2', 'crowdedness_fac', 'intensity', 'dist_inf')
+        group_by_list = ('node_id1', 'gen_fac', 'dm', 'facility_id', 'day', 'starting_time', 'cases')
+        self.data = self.data.groupby([*group_by_list])[[*agg_list]].agg(
+            duration=pd.NamedAgg(column='duration', aggfunc='sum'),
+            inf=pd.NamedAgg(column='lead_to_infection', aggfunc='max'),
+            avg_intensity=pd.NamedAgg(column='intensity', aggfunc=np.mean),
+            num_inf_in_fac=pd.NamedAgg(column='status_node2', aggfunc='sum'),
+            crowdedness_fac=pd.NamedAgg(column='crowdedness_fac', aggfunc=np.mean),
+            dist_inf=pd.NamedAgg(column='dist_inf_x', aggfunc=np.mean))
+        self.data.to_csv(path.join(self.data_output_dir, 'visits.csv'))
 
     def read_day_partitioned_data(self, data_dir: str, prefix: str) -> pd.DataFrame:
         """
@@ -87,7 +107,8 @@ class EncounterProcessor:
         pandas.DataFrame
             returns loaded and concatenated data in a single pandas dataframe
         """
-        if self.verbose: print(f'- Reading {prefix} data . . .')
+        if self.verbose:
+            print(f'- Reading {prefix} data . . .')
 
         if not self.start_day or not self.end_day:
             files = listdir(data_dir)
@@ -119,7 +140,8 @@ class EncounterProcessor:
         -------
         None
         """
-        if self.verbose: print(f'- Cleaning data . . .')
+        if self.verbose:
+            print(f'- Cleaning data . . .')
 
         for c in int_columns:
             self.data.iloc[:, c] = self.data.iloc[:, c].astype(int)
@@ -140,11 +162,12 @@ class EncounterProcessor:
         -------
         None
         """
-        if self.verbose: print(f'- Adding crowdedness . . .')
+        if self.verbose:
+            print(f'- Adding crowdedness . . .')
 
         rev_dict = {d: i for i, d in enumerate(self.data['fac_id'].unique())}
         crowdedness = np.zeros((self.data['fac_id'].nunique(), 24, 7))
-        for i, fac in tqdm(enumerate(self.data['fac_id'].unique())):
+        for i, fac in tqdm(enumerate(self.data['fac_id'].unique()), total=len(self.data['fac_id'].unique())):
             cr_fac = self.data[(self.data['fac_id'] == fac)]
             for hour in range(48):
                 crd = cr_fac[(cr_fac['starting_time'] <= hour) & (
@@ -157,11 +180,12 @@ class EncounterProcessor:
             res.extend(list(self.data.iloc[i:i + 100].apply(lambda x: crowdedness[
                 rev_dict[x['gen_fac'] + str(x['facility_id'])], int(x['starting_time'] // 2), int(x['day'])],
                                                             axis=1).values))
-
+        res = 1
         self.data['crowdedness_fac'] = res
 
     def add_inverse_data(self) -> None:
-        if self.verbose: print(f'- Adding inverse data . . .')
+        if self.verbose:
+            print(f'- Adding inverse data . . .')
 
         """
         Inverse the data based on node_id, and add inverse linkes. i.e if there exists encounter between nodes 0, 1,
@@ -184,18 +208,21 @@ class EncounterProcessor:
         -------
         None
         """
-        if self.verbose: print(f'- Adding node status . . .')
+        if self.verbose:
+            print(f'- Adding node status . . .')
 
-        nodes_past_inf = self.nodes[['id', 'status', 'dm']]
-        nodes_past_inf['dm'] = nodes_past_inf['dm'] + 1
+        nodes_past_inf = self.nodes[['id', 'status', 'dm']].copy()
+        nodes_past_inf.loc[:, 'dm'] = nodes_past_inf.loc[:, 'dm'] + 1
         self.data = self.data.merge(nodes_past_inf, 'left', left_on=['node_id2', 'dm'], right_on=['id', 'dm'])
-        self.data['status'] = self.data['status'].fillna(0).astype(int)
+        self.data.loc[:, 'status'] = self.data.loc[:, 'status'].fillna(0).astype(int)
+        self.data = self.data.rename({'status': 'status_node2'}, axis=1)
         self.data = self.data.merge(nodes_past_inf, 'left', left_on=['node_id1', 'dm'], right_on=['id', 'dm'])
-        self.data['status'] = self.data['status'].fillna(0).astype(int)
+        self.data.loc[:, 'status'] = self.data['status'].fillna(0).astype(int)
         self.data = self.data.drop(['id_x', 'id_y'], axis=1)
 
     def add_total_cases_in_past_day(self):
-        if self.verbose: print(f'- Adding total cases in prev day . . .')
+        if self.verbose:
+            print(f'- Adding total cases in prev day . . .')
 
         cases = self.nodes[self.nodes['status'] == 1].groupby('dm')['status'].sum()
         cases = list(cases.values)
@@ -204,21 +231,23 @@ class EncounterProcessor:
         res = []
         for i in tqdm(range(0, self.data.shape[0], 100)):
             res.extend(list(self.data.iloc[i:i + 100].apply(lambda x: cases[x['dm']], axis=1)))
-
-        self.data['cases'] = cases
+        res = 1
+        self.data['cases'] = res
 
     def add_district_infection_numbers(self):
-        if self.verbose: print(f'- Adding district infection numbers . . .')
+        if self.verbose:
+            print(f'- Adding district infection numbers . . .')
 
         district_inf = self.data.groupby(['dm', 'district'])['lead_to_infection'].sum().reset_index()
         district_inf.columns = ['dm', 'district', 'dist_inf']
         district_inf_t = district_inf.copy()
-        district_inf['dm'] = district_inf['dm'] + 1
+        district_inf.loc[:, 'dm'] = district_inf['dm'] + 1
         self.data = self.data.merge(district_inf, 'left', ['dm', 'district'])
         self.data = self.data.merge(district_inf_t, 'left', ['dm', 'district'])
 
     def compute_mobility_graph(self, mobility_graph_file: str = None) -> None:
-        if self.verbose: print(f'- Computing the  mobility graph . . .')
+        if self.verbose:
+            print(f'- Computing the  mobility graph . . .')
 
         '''
         Compute agent mobility information for the district graph
@@ -243,7 +272,8 @@ class EncounterProcessor:
                     self.mobility_graph.edges[(a, b)][d] += 1
         if mobility_graph_file:
             nx.write_gpickle(self.mobility_graph, path.join(self.data_output_dir, mobility_graph_file))
-        if self.verbose: print('[+] Mobility graph computed!')
+        if self.verbose:
+            print('[+] Mobility graph computed!')
 
     def create_mobility_dataset(self, startdate: date = date(2020, 1, 1)):
         """
@@ -256,7 +286,8 @@ class EncounterProcessor:
         -------
         None
         """
-        if self.verbose: print(f'- Creating mobility dataset . . .')
+        if self.verbose:
+            print(f'- Creating mobility dataset . . .')
 
         if self.mobility_graph is None:
             raise ValueError('Mobility graph cannot be None, run compute_mobility_graph function to generate the graph')
@@ -281,6 +312,7 @@ class EncounterProcessor:
 
 
 if __name__ == '__main__':
+    memory = Memory("cachedir")
     parser = argparse.ArgumentParser()
     parser.add_argument('--encounters_dir', type=str, required=True,
                         help='Path to the folders containing the encounters data (output of the simulation)')

@@ -1,0 +1,7 @@
+{
+        "max_depth": 5,
+        "objective": "binary:logistic",
+        "scale_pos_weight": 100,
+        "nthread": 8,
+        "eval_metric": ["auc", "aucpr", "map"]
+}
