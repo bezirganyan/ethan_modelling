@@ -5,3 +5,5 @@
 __pycache__
 *.pth.tar
 /lightning_logs/
+/mlruns/
+/data.h5

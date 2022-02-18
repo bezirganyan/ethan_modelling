@@ -26,6 +26,7 @@ class EncounterProcessor:
     def __init__(self, encounters_dir: str,
                  district_graph_file: str = 'district_graph.gpickle',
                  data_output_dir: str = 'output',
+                 n_rings: int = 4,
                  start_day: int = None,
                  end_day: int = None,
                  verbose: bool = False,
@@ -39,6 +40,8 @@ class EncounterProcessor:
             the name of the district graph file in the encounters folder
         data_output_dir: str, default = output
             Directory where preprocessing output must be saved
+        n_rings: int, default = 4
+            Number of rings in the district graph
         start_day : int, optional
             the day from which the data needs to be loaded. If not provided the smallest day in directory will be taken
         end_day : int, optional
@@ -49,6 +52,7 @@ class EncounterProcessor:
         self.data_output_dir = data_output_dir
         self.end_day = end_day
         self.start_day = start_day
+        self.n_rings = n_rings
         self.district_graph_file = district_graph_file
         self.encounters_dir = encounters_dir
         self.unique_fac_types = None
@@ -91,9 +95,11 @@ class EncounterProcessor:
         self.add_district_infection_numbers()
         self.add_node_status()
         self.add_total_cases_in_past_day()
+        self.add_rings()
         self.data = self.data[self.data['status'] == 0]
         agg_list = ('duration', 'lead_to_infection', 'status_node2', 'crowdedness_fac', 'intensity', 'dist_inf_x')
-        group_by_list = ('node_id1', 'gen_fac', 'dm', 'facility_id', 'day', 'starting_time', 'cases')
+        group_by_list = ('node_id1', 'gen_fac', 'dm', 'facility_id', 'day',
+                         'starting_time', 'cases', 'district', 'ring')
         self.data = self.data.groupby([*group_by_list])[[*agg_list]].agg(
             duration=pd.NamedAgg(column='duration', aggfunc='sum'),
             inf=pd.NamedAgg(column='lead_to_infection', aggfunc='max'),
@@ -190,7 +196,6 @@ class EncounterProcessor:
             res.extend(list(self.data.iloc[i:i + 100].apply(lambda x: crowdedness[
                 rev_dict[x['gen_fac'] + str(x['facility_id'])], int(x['starting_time'] // 2), int(x['day'])],
                                                             axis=1).values))
-        res = 1
         self.data['crowdedness_fac'] = res
 
     def add_inverse_data(self) -> None:
@@ -213,7 +218,7 @@ class EncounterProcessor:
 
     def add_node_status(self) -> None:
         """
-        Add columns which indicate the status of each node.
+        Add columns which indicates the status of each node.
         Returns
         -------
         None
@@ -230,7 +235,13 @@ class EncounterProcessor:
         self.data.loc[:, 'status'] = self.data['status'].fillna(0).astype(int)
         self.data = self.data.drop(['id_x', 'id_y'], axis=1)
 
-    def add_total_cases_in_past_day(self):
+    def add_total_cases_in_past_day(self) -> None:
+        """
+        Add a column with number of active cases in previous day
+        Returns
+        -------
+        None
+        """
         if self.verbose:
             print(f'- Adding total cases in prev day . . .')
 
@@ -241,10 +252,17 @@ class EncounterProcessor:
         res = []
         for i in tqdm(range(0, self.data.shape[0], 100)):
             res.extend(list(self.data.iloc[i:i + 100].apply(lambda x: cases[x['dm']], axis=1)))
-        res = 1
         self.data['cases'] = res
 
-    def add_district_infection_numbers(self):
+    def add_district_infection_numbers(self) -> None:
+        """
+        Add columns `dist_inf_x` for training, which stores the number of infections happened previous day in the
+        district, and `dist_inf_y`, to be used as label, which stores the number of infections happened that day
+        in the district
+        Returns
+        -------
+        None
+        """
         if self.verbose:
             print(f'- Adding district infection numbers . . .')
 
@@ -254,6 +272,37 @@ class EncounterProcessor:
         district_inf.loc[:, 'dm'] = district_inf['dm'] + 1
         self.data = self.data.merge(district_inf, 'left', ['dm', 'district'])
         self.data = self.data.merge(district_inf_t, 'left', ['dm', 'district'])
+        self.data.loc[:, 'dist_inf_x'] = self.data.loc[:, 'dist_inf_x'].fillna(0)
+        self.data.loc[:, 'dist_inf_y'] = self.data.loc[:, 'dist_inf_y'].fillna(0)
+
+    def add_rings(self) -> None:
+        """
+        Add a column of district rings for each visit
+        Returns
+        -------
+        None
+        """
+        if self.verbose:
+            print(f'- Adding rings . . .')
+        graph = nx.read_gpickle(path.join(self.encounters_dir, self.district_graph_file))
+        ring_count = self.n_rings
+        ring_to_district = dict()
+        for i in range(ring_count):
+            ring_to_district[i] = []
+        district_to_ring = []
+
+        bc = nx.betweenness_centrality(graph)
+        centrality_array = np.array(list(bc.items()))
+        centrality_array = centrality_array[centrality_array[:, 1].argsort()][::-1]
+        rings = np.array_split(centrality_array, ring_count)
+        d2r = dict()
+        for i, ring in enumerate(rings):
+            for node in ring:
+                d2r[int(node[0])] = i
+                ring_to_district[i].append(int(node[0]))
+        district_to_ring = list({k: v for k, v in sorted(d2r.items())}.values())
+
+        self.data['ring'] = self.data['district'].apply(lambda x: district_to_ring[x])
 
     def compute_mobility_graph(self, mobility_graph_file: str = None) -> None:
         if self.verbose:

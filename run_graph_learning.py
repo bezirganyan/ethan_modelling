@@ -1,19 +1,13 @@
 import argparse
 import os
-import time
-from math import ceil
 
 import numpy as np
-import torch
-import torch.nn.functional as F
-import torch.optim as optim
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import EarlyStopping
 
 from data.graph_dataset import MPNNDataModule
 from models.graph_models import MPNNLSTM
-from utils import generate_new_batches, AverageMeter, read_meta_datasets
-import streamlit as st
+from utils import read_meta_datasets
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -47,6 +41,8 @@ if __name__ == '__main__':
                         help='Path to graphs directory.')
     parser.add_argument('--country', type=str, default='SI',
                         help='Country abbrevation (EN, IT, etc.)')
+    parser.add_argument('--data_output_dir', type=str, default='output',
+                        help='Directory where output must be saved')
     args = parser.parse_args()
     labels, gs_adj, features, y = read_meta_datasets(args.window, args.labels_path,
                                                      args.graph_dir, args.country,
@@ -55,8 +51,9 @@ if __name__ == '__main__':
     nfeat = features[0].shape[1]
 
     n_nodes = gs_adj[0].shape[0]
-    if not os.path.exists('results'):
-        os.makedirs('results')
+    res_path = os.path.join(args.data_output_dir, 'results')
+    if not os.path.exists(res_path):
+        os.makedirs(res_path)
     results = []
 
     for shift in list(range(0, args.ahead)):

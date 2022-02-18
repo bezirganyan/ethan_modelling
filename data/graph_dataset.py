@@ -1,10 +1,8 @@
-from typing import Optional
-
 import pytorch_lightning as pl
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-from utils import generate_new_batches, read_meta_datasets
+from utils import generate_new_batches
 
 
 class MPNNDataset(Dataset):
@@ -57,7 +55,7 @@ class MPNNDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         device = torch.device("cuda" if torch.cuda.is_available() else torch.device("cpu"))
 
-        data =  generate_new_batches(self.gs_adj, self.features, self.y, [self.test_sample],
+        data = generate_new_batches(self.gs_adj, self.features, self.y, [self.test_sample],
                                     self.graph_window, self.shift,
                                     self.batch_size, device, self.test_sample)
         dataset = MPNNDataset(data)
