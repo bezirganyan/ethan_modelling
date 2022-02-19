@@ -7,6 +7,7 @@ import pandas as pd
 import scipy.sparse as sp
 import torch
 import xgboost as xgb
+from h2o import h2o
 from sklearn.model_selection import train_test_split
 
 
@@ -237,7 +238,7 @@ def load_tabnet_data(data_path, test_val_size: tuple = (0.2, 0.2), random_seed: 
 
 
 def load_visits_data(data_path, test_val_size: tuple = (0.2, 0.2), random_seed: int = 42):
-    data = pd.read_csv(data_path, index_col=0)
+    data = pd.read_csv(data_path)
     data = data.drop(['dm', 'facility_id', 'starting_time'], axis=1)
     data[['gen_fac']] = data[['gen_fac']].apply(lambda col: pd.Categorical(col).codes)
     data[['day']] = data[['day']].apply(lambda col: pd.Categorical(col).codes)
@@ -268,20 +269,14 @@ def load_visits_data(data_path, test_val_size: tuple = (0.2, 0.2), random_seed: 
     return dtrain, dval, dtest
 
 
-class AverageMeter(object):
-    """Computes and stores the average and current value"""
+def load_h2o_data(data_path, test_val_size: tuple = (0.2, 0.2), random_seed: int = 42):
+    data = pd.read_csv(data_path)
+    data_h2o = h2o.H2OFrame(data)
+    data_h2o['gen_fac'] = data_h2o['gen_fac'].asfactor()
+    data_h2o['day'] = data_h2o['day'].asfactor()
+    data_h2o['inf'] = data_h2o['inf'].asfactor()
+    data_h2o['district'] = data_h2o['inf'].asfactor()
+    data_h2o['ring'] = data_h2o['ring'].asfactor()
 
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
-
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count
+    train, test, valid = data_h2o.split_frame(ratios=[1 - sum(test_val_size), test_val_size[1]], seed=random_seed)
+    return train, test, valid

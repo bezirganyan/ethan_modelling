@@ -38,8 +38,6 @@ if __name__ == "__main__":
                         help='Directory where preprocessing output must be saved')
     parser.add_argument('--xgboost_config_file', type=str, required=True,
                         help='Path to the config JSON file for xgboost')
-    parser.add_argument('--verbose', dest='verbose', action='store_true',
-                        help='Verbosity')
     parser.add_argument('--random_seed', type=int, default=42)
     args = parser.parse_args()
 
